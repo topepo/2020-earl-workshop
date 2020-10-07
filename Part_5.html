@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="" xml:lang="">
+  <head>
+    <title>A Quick Introduction to tidymodels</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Max Kuhn (RStudio)" />
+    <meta name="date" content="2020-10-05" />
+    <script src="libs/header-attrs-2.3/header-attrs.js"></script>
+    <link href="libs/remark-css-0.0.1/default.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.2/css/all.css" integrity="sha384-oS3vJWv+0UjzBfQzYUhtDYW+Pj2yciDJxpsK1OYPAYjqT085Qq/1cq5FLXAZQ7Ay" crossorigin="anonymous">
+    <link rel="stylesheet" href="assets/css/aml-theme.css" type="text/css" />
+    <link rel="stylesheet" href="assets/css/aml-fonts.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+
+
+class: title-slide, center
+
+&lt;span class="fa-stack fa-4x"&gt;
+  &lt;i class="fa fa-circle fa-stack-2x" style="color: #ffffff;"&gt;&lt;/i&gt;
+  &lt;strong class="fa-stack-1x" style="color:#E7553C;"&gt;5&lt;/strong&gt;
+&lt;/span&gt; 
+
+# A Quick Introduction to tidymodels
+
+## Model Tuning
+
+
+
+
+
+---
+# Loading
+
+
+```r
+library(tidymodels)
+```
+
+```
+## ── Attaching packages ───────────────────────────────────────────────────────────── tidymodels 0.1.1 ──
+```
+
+```
+## ✓ broom     0.7.0      ✓ recipes   0.1.13
+## ✓ dials     0.0.9      ✓ rsample   0.0.8 
+## ✓ dplyr     1.0.2      ✓ tibble    3.0.3 
+## ✓ ggplot2   3.3.2      ✓ tidyr     1.1.2 
+## ✓ infer     0.5.2      ✓ tune      0.1.1 
+## ✓ modeldata 0.0.2      ✓ workflows 0.2.0 
+## ✓ parsnip   0.1.3      ✓ yardstick 0.0.7 
+## ✓ purrr     0.3.4
+```
+
+```
+## ── Conflicts ──────────────────────────────────────────────────────────────── tidymodels_conflicts() ──
+## x dplyr::combine() masks gridExtra::combine()
+## x purrr::discard() masks scales::discard()
+## x dplyr::filter()  masks stats::filter()
+## x dplyr::lag()     masks stats::lag()
+## x recipes::step()  masks stats::step()
+```
+
+
+
+
+---
+
+# Previously
+
+
+```r
+library(modeldata)
+
+data(ames, package = "modeldata")
+
+ames &lt;- mutate(ames, Sale_Price = log10(Sale_Price))
+
+set.seed(4595)
+data_split &lt;- initial_split(ames, strata = "Sale_Price")
+ames_train &lt;- training(data_split)
+ames_test  &lt;- testing(data_split)
+
+set.seed(2453)
+cv_splits &lt;- vfold_cv(ames_train) #10-fold is default
+
+perf_metrics &lt;- metric_set(rmse, rsq, ccc)
+```
+
+
+```r
+ames_rec &lt;- recipe(
+    Sale_Price ~ Bldg_Type + Neighborhood + Year_Built + 
+                 Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+                 Central_Air + Longitude + Latitude,
+    data = ames_train
+  ) %&gt;%
+  step_BoxCox(Lot_Area, Gr_Liv_Area) %&gt;%
+  step_other(Neighborhood, threshold = 0.05)  %&gt;%
+  step_dummy(all_nominal()) %&gt;%
+  step_interact(~ starts_with("Central_Air"):Year_Built) %&gt;%
+  step_bs(Longitude, Latitude, deg_free = 5)
+```
+
+
+---
+layout: false
+class: inverse, middle, center
+
+# Model Tuning
+
+---
+
+# Tuning Parameters
+
+There are some models with parameters that _cannot be directly estimated from the data_. 
+
+For example:
+
+* The number of neighbors in a K-NN models.
+
+* The depth of a classification tree. 
+
+* The link function in a generalized linear model (e.g. logit, probit, etc).
+
+* The covariance structure in a linear mixed model. 
+
+---
+
+# Tuning Parameters and Overfitting
+
+Overfitting occurs when a model inappropriately picks up on trends in the training set that do not generalize to new samples. 
+
+When this occurs, assessments of the model based on the training set can show good performance that does not reproduce in future samples.   
+
+For example, _K_ = 1 neighbors is much more likely to overfit the data than larger values since they average more values. 
+
+Also, how would you evaluate this model by re-predicting the training set? Those values would be optimistic since one of your neighbors is always you. 
+
+---
+
+# Model Tuning
+
+.pull-left[
+
+Unsurprisingly, we will evaluate a tuning parameter by fitting a model on one set of data and assessing it with another. 
+
+_Grid search_ uses a pre-defined set of candidate tuning parameter values and evaluates their performance so that the best values can be used in the final model. 
+
+We'll use resampling to do this. If there are _B_ resamples and _C_ tuning parameter combinations, we end up fitting  `\(B \times C\)`  models (but these can be done in parallel). 
+
+]
+.pull-right[
+
+&lt;img src="images/resampling_algorithm.svg" width="120%" style="display: block; margin: auto;" /&gt;
+
+]
+
+---
+
+# Better API's using the tune package
+
+`tune` has more general functions for tuning models. There are two main strategies used: 
+
+ * Grid search (as shown above) where all of the candidate models are known at the start. We pick the best of these. 
+
+ * Iterative search where each iteration finds novel tuning parameter values to evaluate. 
+
+Both have their advantages and disadvantages. Due to time constraints, we will focus on grid search. 
+
+&lt;br&gt;
+
+Iterative methods, such as Bayesian optimization or simulated annealing, can also be used in the `tune` and `finetune` packages, respectively. 
+
+---
+
+# Elements Required for Grid Search &lt;img src="images/dials.svg" class="title-hex"&gt;
+
+.pull-left[
+
+* A set of candidate values to evaluate.
+
+* Measure of model performance.  
+
+* A resampling scheme to reliably estimate model performance.
+
+We've discussed the last two. Now let's focus on the grid. 
+
+There are two main types of grids: regular and non-regular. 
+
+]
+
+.pull-right[
+
+&lt;img src="images/part-4-grid-plot-1.svg" width="100%" style="display: block; margin: auto;" /&gt;
+
+]
+
+---
+
+# About Regular Grids
+
+Usually combinatorial representation of vectors of tuning parameter values. Note that:
+
+* The number of values don't have to be the same per parameter.
+
+* The values can be regular on a transformed scale (e.g. log-10 for penalty).
+
+* Quantitative and qualitative parameters can be combined.
+
+* As the number of parameters increase, the curse of dimensionality kicks in.
+
+* _Thought_ to be really inefficient but not in all cases (see the sub-model trick and `multi_predict()`).
+
+* Bad when performance plateaus over a range of one or more parameters.
+
+---
+
+# Making Regular Grids &lt;img src="images/dials.svg" class="title-hex"&gt;
+
+.pull-left[
+
+You can use `expand.grid()` to make a data frame where parameters are in columns and candidate values are in rows. 
+
+`dials` has functions to create parameters and parameter sets. For example:
+
+
+```r
+penalty()
+```
+
+```
+## Amount of Regularization (quantitative)
+## Transformer:  log-10 
+## Range (transformed scale): [-10, 0]
+```
+
+```r
+mixture()
+```
+
+```
+## Proportion of lasso Penalty (quantitative)
+## Range: [0, 1]
+```
+
+```r
+glmn_param &lt;- parameters(penalty(), mixture())
+```
+
+]
+
+.pull-right[
+
+
+```r
+glmn_param
+```
+
+```
+## Collection of 2 parameters for tuning
+## 
+##  identifier    type    object
+##     penalty penalty nparam[+]
+##     mixture mixture nparam[+]
+```
+
+```r
+glmn_grid &lt;- 
+  grid_regular(glmn_param, levels = c(penalty = 10, mixture = 5))
+glmn_grid %&gt;% slice(1:4)
+```
+
+```
+## # A tibble: 4 x 2
+##         penalty mixture
+##           &lt;dbl&gt;   &lt;dbl&gt;
+## 1 0.0000000001        0
+## 2 0.00000000129       0
+## 3 0.0000000167        0
+## 4 0.000000215         0
+```
+
+Note that the grid for `penalty` is created in the log-10 space but the values in the data frame are in the original units. 
+
+]
+
+
+---
+
+# Non-Regular Grids &lt;img src="images/dials.svg" class="title-hex"&gt;
+
+.pull-left[
+
+There are two main methods that we have to make these: 
+
+ * Random grids uniformly sample the parameter space (that might already be on a different scale).
+
+ * Space-filling designs (SFD) are based on statistical experimental design principles and try to keep candidate values away from one another while encompassing the entire parameter space. 
+
+There's no real downside to using the space-filling designs, so we will focus on these. 
+
+]
+
+.pull-right[
+
+The code is easy when using a parameter set:
+
+
+```r
+set.seed(7454)
+
+glmn_sfd &lt;- grid_max_entropy(glmn_param, size = 50)
+
+glmn_sfd %&gt;% slice(1:4)
+```
+
+```
+## # A tibble: 4 x 2
+##      penalty mixture
+##        &lt;dbl&gt;   &lt;dbl&gt;
+## 1 0.00000362   0.172
+## 2 0.0102       0.414
+## 3 0.00000372   0.346
+## 4 0.000709     0.544
+```
+
+```r
+# grid_latin_hypercube() can also be used
+# grid_random() too
+```
+
+]
+
+---
+
+# Modifying Parameter Sets &lt;img src="images/dials.svg" class="title-hex"&gt;
+
+.pull-left[
+
+
+```r
+# The names can be changed:
+glmn_set &lt;- parameters(lambda = penalty(), mixture())
+
+# The ranges can also be set by their name:
+glmn_set &lt;- 
+  update(glmn_set, lambda = penalty(c(-5, -1)))
+```
+
+&lt;br&gt;
+
+
+```r
+# Some parameters depend on data dimensions:
+mtry()
+```
+
+```
+## # Randomly Selected Predictors (quantitative)
+## Range: [1, ?]
+```
+
+```r
+rf_set &lt;- parameters(mtry(), trees())
+```
+
+]
+
+.pull-right[
+
+
+```r
+rf_set
+```
+
+```
+## Collection of 2 parameters for tuning
+## 
+##  identifier  type    object
+##        mtry  mtry nparam[?]
+##       trees trees nparam[+]
+## 
+## Parameters needing finalization:
+##    # Randomly Selected Predictors ('mtry')
+## 
+## See `?dials::finalize` or `?dials::update.parameters` for more information.
+```
+
+```r
+# Sets the range of mtry to
+# be the number of predictors
+finalize(rf_set, mtcars %&gt;% dplyr::select(-mpg))
+```
+
+```
+## Collection of 2 parameters for tuning
+## 
+##  identifier  type    object
+##        mtry  mtry nparam[+]
+##       trees trees nparam[+]
+```
+
+]
+
+---
+
+# K-NN Tuning parameters &lt;img src="images/dials.svg" class="title-hex"&gt;
+
+The `dist_power` parameter is related to the type of distance calculation. `dist_power = 2` is everyday Euclidean distance, `dist_power = 1` is Manhattan distance, and so on. Fractional values are acceptable. 
+
+`weight_func` determines how much influence neighbors have based on their distance: 
+
+&lt;img src="images/part-4-schemes-1.svg" width="100%" style="display: block; margin: auto;" /&gt;
+
+---
+
+# Tagging Tuning parameters &lt;img src="images/parsnip.svg" class="title-hex"&gt;&lt;img src="images/dials.svg" class="title-hex"&gt;
+
+To tune the model, the first step is to _tag_ the parameters that will be optimized. `tune::tune()` can be used to do this:
+
+
+```r
+library(tune)
+
+knn_mod &lt;- 
+  nearest_neighbor(neighbors = tune(), weight_func = tune()) %&gt;% 
+  set_engine("kknn") %&gt;% 
+  set_mode("regression")
+```
+
+`parameters()` can detect these arguments:
+
+
+```r
+parameters(knn_mod)
+```
+
+```
+## Collection of 2 parameters for tuning
+## 
+##   identifier        type    object
+##    neighbors   neighbors nparam[+]
+##  weight_func weight_func dparam[+]
+```
+ 
+---
+
+# Tagging Tuning parameters &lt;img src="images/parsnip.svg" class="title-hex"&gt;&lt;img src="images/dials.svg" class="title-hex"&gt;
+
+`tune()` has an optimal argument called `id` that can be used to name the parameters:
+
+
+```r
+nearest_neighbor(neighbors = tune("K"), weight_func = tune("weights")) %&gt;% 
+  set_engine("kknn") %&gt;% 
+  set_mode("regression") %&gt;% 
+  parameters()
+```
+
+```
+## Collection of 2 parameters for tuning
+## 
+##  identifier        type    object
+##           K   neighbors nparam[+]
+##     weights weight_func dparam[+]
+```
+
+This mainly comes in handy when the same parameter type shows up in two different places (an example is shown later). 
+
+Recipe steps can also have `tune()` in their arguments.
+
+---
+
+# Grid Search &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/parsnip.svg" class="title-hex"&gt;&lt;img src="images/dials.svg" class="title-hex"&gt;
+
+Let's tune the model over a regular grid and optimize `neighbors` and `weight_func`. First we make the grid, then call `tune_grid()`:
+
+.pull-left[
+
+
+```r
+set.seed(522)
+
+knn_grid &lt;- knn_mod %&gt;% 
+  parameters() %&gt;% 
+  grid_regular(
+    levels = c(neighbors = 15, weight_func = 5)
+  )
+
+ctrl &lt;- control_grid(verbose = TRUE, save_pred = TRUE)
+
+knn_tune &lt;- 
+  knn_mod %&gt;% 
+  tune_grid(
+    ames_rec,
+    resamples = cv_splits, 
+    grid = knn_grid, 
+    control = ctrl
+  )
+```
+
+]
+
+.pull-right[
+
+We are optimizing 75 models over 10 resamples. The output looks like:
+
+&lt;img src="images/verbose-tune.png" width="100%" style="display: block; margin: auto;" /&gt;
+
+
+]
+
+---
+
+# Some Notes
+
+ * If we are evaluating 75 models, why does it say `model 1/5`?
+ 
+ * The recipe is made _once_ per resample to avoid redundant computations. 
+ 
+ * The warnings about "ill-conditioned bases" is related to using splines for longitude and latitude. Remember those outlying houses on Lincoln Highway? 
+ 
+   * These are printed _as they happen_ and are labeled so that you know which sub-model had the issue. 
+
+ * Unfortunately, these messages don't show up when parallel processing is used (more on that later). We are working on this but it is a tough problem that I've been trying to solve for about a decade. 
+
+---
+
+# The Results  &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/parsnip.svg" class="title-hex"&gt;&lt;img src="images/dials.svg" class="title-hex"&gt;
+
+A tibble is returned that looks like the &lt;span class="note"&gt;rsample&lt;/span&gt; object with an extra list column called `.metrics`:
+
+.code90[
+
+.pull-left[
+
+
+```r
+knn_tune
+```
+
+```
+## Warning: This tuning result has notes. Example notes on model fitting include:
+## model 2/5 (predictions): some 'x' values beyond boundary knots may cause ill-conditioned bases
+## model 2/5 (predictions): some 'x' values beyond boundary knots may cause ill-conditioned bases
+## model 3/5 (predictions): some 'x' values beyond boundary knots may cause ill-conditioned bases
+```
+
+```
+## # Tuning results
+## # 10-fold cross-validation 
+## # A tibble: 10 x 5
+##    splits           id     .metrics           .notes           .predictions         
+##    &lt;list&gt;           &lt;chr&gt;  &lt;list&gt;             &lt;list&gt;           &lt;list&gt;               
+##  1 &lt;split [2K/220]&gt; Fold01 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  2 &lt;split [2K/220]&gt; Fold02 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  3 &lt;split [2K/220]&gt; Fold03 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  4 &lt;split [2K/220]&gt; Fold04 &lt;tibble [150 × 6]&gt; &lt;tibble [5 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  5 &lt;split [2K/220]&gt; Fold05 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  6 &lt;split [2K/220]&gt; Fold06 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  7 &lt;split [2K/220]&gt; Fold07 &lt;tibble [150 × 6]&gt; &lt;tibble [5 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  8 &lt;split [2K/220]&gt; Fold08 &lt;tibble [150 × 6]&gt; &lt;tibble [5 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+##  9 &lt;split [2K/220]&gt; Fold09 &lt;tibble [150 × 6]&gt; &lt;tibble [5 × 1]&gt; &lt;tibble [16,500 × 6]&gt;
+## 10 &lt;split [2K/219]&gt; Fold10 &lt;tibble [150 × 6]&gt; &lt;tibble [0 × 1]&gt; &lt;tibble [16,425 × 6]&gt;
+```
+
+]
+
+.pull-right[
+
+
+```r
+# results for the first fold:
+knn_tune$.metrics[[1]]
+```
+
+```
+## # A tibble: 150 x 6
+##    neighbors weight_func .metric .estimator .estimate .config
+##        &lt;int&gt; &lt;chr&gt;       &lt;chr&gt;   &lt;chr&gt;          &lt;dbl&gt; &lt;chr&gt;  
+##  1         1 biweight    rmse    standard      0.111  Model01
+##  2         2 biweight    rmse    standard      0.103  Model02
+##  3         3 biweight    rmse    standard      0.0982 Model03
+##  4         4 biweight    rmse    standard      0.0962 Model04
+##  5         5 biweight    rmse    standard      0.0950 Model05
+##  6         6 biweight    rmse    standard      0.0940 Model06
+##  7         7 biweight    rmse    standard      0.0925 Model07
+##  8         8 biweight    rmse    standard      0.0923 Model08
+##  9         9 biweight    rmse    standard      0.0926 Model09
+## 10        10 biweight    rmse    standard      0.0929 Model10
+## # … with 140 more rows
+```
+
+150 rows = 75 models x 2 metrics
+
+`.config` is a column that is unique for each tuning parameter combination. 
+
+]
+
+]
+
+---
+
+# Resampled Performance Estimates  &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/parsnip.svg" class="title-hex"&gt;&lt;img src="images/dials.svg" class="title-hex"&gt;
+
+To get the overall resampling estimate (averaged over folds) for each parameter combination:
+
+
+```r
+show_best(knn_tune, metric = "rmse", n = 3)
+```
+
+```
+## # A tibble: 3 x 8
+##   neighbors weight_func .metric .estimator   mean     n std_err .config
+##       &lt;int&gt; &lt;chr&gt;       &lt;chr&gt;   &lt;chr&gt;       &lt;dbl&gt; &lt;int&gt;   &lt;dbl&gt; &lt;chr&gt;  
+## 1         8 triangular  rmse    standard   0.0816    10 0.00281 Model53
+## 2         7 triangular  rmse    standard   0.0817    10 0.00278 Model52
+## 3         6 triangular  rmse    standard   0.0817    10 0.00279 Model51
+```
+
+```r
+# Or pick the numerically best results
+best_res &lt;- select_best(knn_tune, metric = "rmse")
+best_res
+```
+
+```
+## # A tibble: 1 x 3
+##   neighbors weight_func .config
+##       &lt;int&gt; &lt;chr&gt;       &lt;chr&gt;  
+## 1         8 triangular  Model53
+```
+
+
+---
+
+# Plotting the results &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/ggplot2.svg" class="title-hex"&gt;
+
+
+```r
+autoplot(knn_tune, metric = "rmse")
+```
+
+&lt;img src="images/part-4-knn-plot-whole-1.svg" width="60%" style="display: block; margin: auto;" /&gt;
+
+
+---
+
+# Plotting the results - ENHANCE &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/ggplot2.svg" class="title-hex"&gt;
+
+
+```r
+autoplot(knn_tune, metric = "rmse") + ylim(c(.07, .1))
+```
+
+&lt;img src="images/part-4-knn-plot-1.svg" width="60%" style="display: block; margin: auto;" /&gt;
+
+
+---
+
+# Looking at the predictions &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/ggplot2.svg" class="title-hex"&gt;&lt;img src="images/dplyr.png" class="title-hex"&gt;
+
+To do some diagnostic checks, let's subset on the best parameters and plot the observed vs predicted: 
+
+
+.pull-left[
+
+```r
+knn_best_pred &lt;- 
+  knn_tune %&gt;% 
+  collect_predictions(parameters = best_res) %&gt;% 
+  mutate(resid = Sale_Price - .pred) %&gt;% 
+  arrange(desc(abs(resid)))
+
+knn_best_pred %&gt;% slice(1:4)
+```
+
+```
+## # A tibble: 4 x 8
+##   id     .pred  .row neighbors weight_func Sale_Price .config  resid
+##   &lt;chr&gt;  &lt;dbl&gt; &lt;int&gt;     &lt;int&gt; &lt;chr&gt;            &lt;dbl&gt; &lt;chr&gt;    &lt;dbl&gt;
+## 1 Fold09  4.92  1173         8 triangular        4.12 Model59 -0.807
+## 2 Fold01  4.79   139         8 triangular        4.11 Model58 -0.686
+## 3 Fold06  5.03  2131         8 triangular        4.54 Model52 -0.482
+## 4 Fold09  5.12  1538         8 triangular        4.70 Model54 -0.416
+```
+
+```r
+knn_best_pred %&gt;% 
+  ggplot(aes(x = Sale_Price, y = .pred)) + 
+  geom_abline(col = "green") +
+  geom_point(alpha = .3) + 
+  coord_obs_pred()
+```
+]
+.pull-right[
+
+&lt;img src="images/part-4-knn-obs-pred-1.svg" width="80%" style="display: block; margin: auto;" /&gt;
+
+]
+
+
+---
+
+# Finalizing the model &lt;img src="images/tune.svg" class="title-hex"&gt;
+
+If we are happy with these parameters, we can splice these back into the model so that a final fit can be created on the training set:
+
+.font70[
+
+
+```r
+( final_knn_mod &lt;- finalize_model(knn_mod, best_res) )
+```
+
+```
+## K-Nearest Neighbor Model Specification (regression)
+## 
+## Main Arguments:
+##   neighbors = 8
+##   weight_func = triangular
+## 
+## Computational engine: kknn
+```
+
+```r
+( final_knn_fit &lt;- final_knn_mod %&gt;% last_fit(ames_rec, split = data_split) )
+```
+
+```
+## # Resampling results
+## # Monte Carlo cross-validation (0.75/0.25) with 1 resamples  
+## # A tibble: 1 x 6
+##   splits             id               .metrics         .notes           .predictions       .workflow 
+##   &lt;list&gt;             &lt;chr&gt;            &lt;list&gt;           &lt;list&gt;           &lt;list&gt;             &lt;list&gt;    
+## 1 &lt;split [2.2K/731]&gt; train/test split &lt;tibble [2 × 3]&gt; &lt;tibble [1 × 1]&gt; &lt;tibble [731 × 3]&gt; &lt;workflow&gt;
+```
+
+]
+
+---
+
+# Test set results &lt;img src="images/tune.svg" class="title-hex"&gt;&lt;img src="images/ggplot2.svg" class="title-hex"&gt;
+
+.pull-left[
+
+```r
+# Test set results
+collect_metrics(final_knn_fit)
+```
+
+```
+## # A tibble: 2 x 3
+##   .metric .estimator .estimate
+##   &lt;chr&gt;   &lt;chr&gt;          &lt;dbl&gt;
+## 1 rmse    standard      0.0798
+## 2 rsq     standard      0.784
+```
+
+```r
+final_knn_fit %&gt;% 
+  collect_predictions() %&gt;% 
+  ggplot(aes(x = Sale_Price, y = .pred)) + 
+  geom_abline(col = "green") +
+  geom_point(alpha = .3) + 
+  coord_obs_pred()
+```
+]
+.pull-right[
+
+&lt;img src="images/part-4-knn-obs-test-pred-1.svg" width="80%" style="display: block; margin: auto;" /&gt;
+
+]
+
+---
+
+# Parallel Processing
+
+
+.pull-left[
+ 
+There is no real barrier to running these models in parallel. Can we benefit from splitting the fits up to run on multiple cores?
+
+These speed-ups can be very model- and data-dependent but this pattern generally holds. 
+
+Note that there is little incremental benefit to using more workers than physical cores on the computer. Use `parallel::detectCores(logical = FALSE)`.
+
+(A lot more details can be found in [this blog post](http://appliedpredictivemodeling.com/blog/2018/1/17/parallel-processing))
+
+]
+.pull-right[
+&lt;img src="images/part-4-par-plot-1.svg" width="100%" style="display: block; margin: auto;" /&gt;
+
+In these simulations, we estimated the speed-up by using the sub-model trick to be about _25-fold_. 
+
+]
+
+
+---
+
+# Running in Parallel with {tune}
+
+.pull-left[
+
+To loop through the models and data sets, `tune` uses the [`foreach`](https://www.rdocumentation.org/packages/foreach) package, which can parallelize `for` loops.
+
+`foreach` has a number of _parallel backends_ which allow various technologies to be used in conjunction with the package.
+
+On CRAN, these are the "`do{X}`" packages, such as
+[`doAzureParallel`](https://github.com/Azure/doAzureParallel), 
+[`doFuture`](https://www.rdocumentation.org/packages/doFuture), [`doMC`](https://www.rdocumentation.org/packages/doMC), 
+[`doMPI`](https://www.rdocumentation.org/packages/doMPI), [`doParallel`](https://www.rdocumentation.org/packages/doParallel), [`doRedis`](https://www.rdocumentation.org/packages/doRedis), and [`doSNOW`](https://www.rdocumentation.org/packages/doSNOW).
+
+For example, `doMC` uses the `multicore` package, which forks processes to split computations (for unix and OS X). `doParallel` can be used for all operating systems.
+
+]
+
+.pull-right[
+
+To use parallel processing in `tune`, no changes are needed when calling `tune_*()`. 
+
+The parallel technology must be _registered_ with `foreach` prior to calling `tune_*()`:
+
+
+```r
+library(doParallel)
+
+cl &lt;- makeCluster(6)
+registerDoParallel(cl)
+
+# run `tune_grid()`...
+
+stopCluster(cl)
+```
+
+]
+
+---
+
+# Model template code
+
+tidymodels code is a little more verbose than other frameworks (e.g. `caret`). For some common models, we can automatically generate code templates for certain models. 
+
+
+```r
+library(usemodels)
+
+use_xgboost(Sale_Price ~ ., data = ames)
+```
+
+The preprocessing that is used in the recipe (if any) is based on both the model and data set. 
+
+For example, in the code above, we create dummy variables since `xgboost` doesn't do that for you (unlike almost all other tree ensemble models). These steps are omitted when there are no factor predictors. 
+
+
+
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script src="https://platform.twitter.com/widgets.js"></script>
+<script>var slideshow = remark.create({
+"highlightStyle": "solarized-light",
+"highlightLanguage": "R",
+"highlightLines": true,
+"countIncrementalSlides": false,
+"ratio": "16:9"
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();
+(function() {
+  "use strict"
+  // Replace <script> tags in slides area to make them executable
+  var scripts = document.querySelectorAll(
+    '.remark-slides-area .remark-slide-container script'
+  );
+  if (!scripts.length) return;
+  for (var i = 0; i < scripts.length; i++) {
+    var s = document.createElement('script');
+    var code = document.createTextNode(scripts[i].textContent);
+    s.appendChild(code);
+    var scriptAttrs = scripts[i].attributes;
+    for (var j = 0; j < scriptAttrs.length; j++) {
+      s.setAttribute(scriptAttrs[j].name, scriptAttrs[j].value);
+    }
+    scripts[i].parentElement.replaceChild(s, scripts[i]);
+  }
+})();
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+// adds .remark-code-has-line-highlighted class to <pre> parent elements
+// of code chunks containing highlighted lines with class .remark-code-line-highlighted
+(function(d) {
+  const hlines = d.querySelectorAll('.remark-code-line-highlighted');
+  const preParents = [];
+  const findPreParent = function(line, p = 0) {
+    if (p > 1) return null; // traverse up no further than grandparent
+    const el = line.parentElement;
+    return el.tagName === "PRE" ? el : findPreParent(el, ++p);
+  };
+
+  for (let line of hlines) {
+    let pre = findPreParent(line);
+    if (pre && !preParents.includes(pre)) preParents.push(pre);
+  }
+  preParents.forEach(p => p.classList.add("remark-code-has-line-highlighted"));
+})(document);</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
